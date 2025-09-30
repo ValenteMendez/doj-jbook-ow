@@ -28,7 +28,7 @@ def _to_text(val: Any) -> str:
     return str(val)
 
 
-def build_corpus(row: Dict) -> str:
+def build_corpus(row: Dict, max_length: int = 8000) -> str:
     parts_raw = [
         row.get("AccomplishmentsText"),
         row.get("AcquisitionStrategyText"),
@@ -38,8 +38,17 @@ def build_corpus(row: Dict) -> str:
     for pr in parts_raw:
         text = _to_text(pr).strip()
         if text:
+            # Truncate individual parts to prevent API timeouts
+            if len(text) > max_length // 3:
+                text = text[:max_length // 3] + "... [truncated]"
             parts.append(text)
-    return "\n\n".join(parts)
+
+    corpus = "\n\n".join(parts)
+    # Final check to ensure total corpus is within limits
+    if len(corpus) > max_length:
+        corpus = corpus[:max_length] + "... [truncated]"
+
+    return corpus
 
 
 def _rule_based_relevance(corpus: str, keywords: List[str]) -> Tuple[RelevanceTag, str]:
@@ -102,12 +111,25 @@ def _openai_tag_one(
             temperature=0.0,
         )
         content = resp.choices[0].message.content or "{}"
+
+        # Strip markdown code blocks if present
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
         data = json.loads(content)
         label = str(data.get("label", "Low"))
         rationale = str(data.get("rationale", ""))
         if label not in ("High", "Medium", "Low"):
             label = "Low"
         return label, rationale
+    except json.JSONDecodeError as e:
+        return ("Low", f"JSON parse error: {e}. Content was: {repr(content)}")
     except Exception as e:
         return ("Low", f"OpenAI error: {e}")
 
